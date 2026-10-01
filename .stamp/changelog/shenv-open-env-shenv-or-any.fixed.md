@@ -1,0 +1,1 @@
+`shenv open env.shenv` (or any other shenv file as the target) is now refused before anything is decrypted. The argument is where the secrets are written, so it used to try to overwrite the encrypted file with the plaintext.
