@@ -35,13 +35,31 @@ func readConfig(path string) (map[string]string, error) {
 		// hide part of the command the same way. No key or single-line command
 		// needs either.
 		if i := strings.IndexFunc(line, func(r rune) bool { return r != '\t' && !unicode.IsGraphic(r) }); i >= 0 {
-			return nil, fmt.Errorf("%s line %d: control character or invisible rune in %q", path, lineNo, raw)
+			return nil, fmt.Errorf("%s line %d%s: control character or invisible rune", path, lineNo, keyHint(line))
 		}
 		key, val, ok := strings.Cut(line, "=")
 		if !ok {
-			return nil, fmt.Errorf("%s line %d: missing '=' in %q", path, lineNo, raw)
+			return nil, fmt.Errorf("%s line %d: missing '='", path, lineNo)
 		}
 		cfg[strings.TrimSpace(key)] = strings.TrimSpace(val)
 	}
 	return cfg, nil
+}
+
+// keyHint names the key of a rejected line so the user can find it, but only
+// when the key is a plain identifier. Parse errors never quote the line itself:
+// a committed config.shenv may be a symlink to /proc/self/environ or ~/.netrc,
+// and echoing its content would print local secrets into a terminal or CI log.
+func keyHint(line string) string {
+	key, _, ok := strings.Cut(line, "=")
+	key = strings.TrimSpace(key)
+	if !ok || key == "" || len(key) > 64 {
+		return ""
+	}
+	for _, r := range key {
+		if r != '_' && r != '-' && r != '.' && (r > unicode.MaxASCII || !unicode.IsLetter(r) && !unicode.IsDigit(r)) {
+			return ""
+		}
+	}
+	return fmt.Sprintf(" (key %s)", key)
 }
