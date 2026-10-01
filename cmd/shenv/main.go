@@ -23,7 +23,7 @@ Usage:
                                     Grant a teammate access (then seal)
   shenv remove-member <name>        Revoke a teammate's access (then seal)
   shenv seal [file]                 Encrypt .env → env.shenv for all members, signed with your key
-  shenv open [file] [--force]       Decrypt env.shenv → .env (verifies who sealed it)
+  shenv open [out] [--force]        Decrypt env.shenv → .env (or out; verifies who sealed it)
   shenv edit                        Edit secrets in your $EDITOR — decrypt, edit, re-seal; no plaintext in the repo
   shenv run -- <command> [args...]  Run a command with secrets injected (no .env on disk)
   shenv remember                    Cache your passphrase in the OS keychain

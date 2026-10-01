@@ -98,7 +98,7 @@ shenv edit                # decrypt → your $EDITOR → re-seal; plaintext neve
 | `shenv add-member <name> <key> <signing-key>` | Add a teammate's public keys (then `seal`)                              |
 | `shenv remove-member <name>`    | Revoke a teammate's access (then `seal` — and rotate the secrets they knew)           |
 | `shenv seal [file]`             | Encrypt `.env` (or `file`) → `env.shenv` for all members, signed with your key          |
-| `shenv open [file] [--force]`   | Decrypt `env.shenv` → `.env`, verifying who sealed it; asks before clobbering local edits |
+| `shenv open [out] [--force]`    | Decrypt `env.shenv` → `.env` (or `out`), verifying who sealed it; asks before clobbering local edits |
 | `shenv edit`                    | Edit the secrets in `$EDITOR` and re-seal — the plaintext lives only in a locked-down temp file outside the repo, shredded afterwards |
 | `shenv run -- <command>`        | Run a command with secrets injected as env vars — no plaintext `.env` on disk         |
 | `shenv remember`                | Cache your passphrase in the OS keychain so `open` stops asking                       |

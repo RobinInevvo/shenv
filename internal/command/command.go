@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -406,6 +407,10 @@ func Open(args []string) error {
 		}
 	}
 
+	if err := rejectShenvTarget(out); err != nil {
+		return err
+	}
+
 	plaintext, err := decryptEnv()
 	if err != nil {
 		return err
@@ -449,6 +454,25 @@ func Open(args []string) error {
 	}
 	fmt.Println(done)
 	return nil
+}
+
+// rejectShenvTarget refuses an open target that is one of shenv's own files.
+// `shenv open env.shenv` reads like "open this blob", but the argument is where
+// the plaintext goes: going ahead would replace the encrypted blob (or the
+// recipients/config trust anchors) with the decrypted secrets, and only a
+// git-tracked file would be caught later by ensureIgnored.
+func rejectShenvTarget(out string) error {
+	clean := filepath.Clean(out)
+	isOwn := strings.EqualFold(filepath.Ext(clean), ".shenv")
+	if store, err := backend.Load(); err == nil {
+		if fb, ok := store.(backend.FileBackend); ok && strings.EqualFold(clean, filepath.Clean(fb.Path)) {
+			isOwn = true
+		}
+	}
+	if !isOwn {
+		return nil
+	}
+	return fmt.Errorf("%s is one of shenv's own files, not an output — `shenv open [out]` takes the file to write the decrypted secrets to (default %s); it always reads the configured blob, so just run `shenv open`", out, defaultEnvFile)
 }
 
 // ensureGitignore makes sure .env is ignored and env.shenv is not.

@@ -265,3 +265,53 @@ func TestPullSymlinkOutRejected(t *testing.T) {
 		t.Fatal("pulling through a symlinked target must be refused")
 	}
 }
+
+// TestOpenRejectsShenvFilesAsTarget: `shenv open env.shenv` reads like "open
+// this blob", but the argument is the output path. Writing plaintext there would
+// destroy the blob (or a trust anchor), so it must fail before any prompt and
+// leave every file untouched — even with --force.
+func TestOpenRejectsShenvFilesAsTarget(t *testing.T) {
+	setup(t)
+	mustInit(t)
+	writeEnv(t, "K=v\n")
+	feed(t, "y\n")
+	if err := Seal(nil); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(backend.DefaultBlobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{backend.DefaultBlobPath},
+		{"./" + backend.DefaultBlobPath, "--force"},
+		{"--out", "ENV.SHENV"},
+		{"--out=recipients.shenv"},
+		{"config.shenv", "--force"},
+	} {
+		feed(t, "y\n")
+		err := Open(args)
+		if err == nil || !strings.Contains(err.Error(), "shenv's own files") {
+			t.Fatalf("open %v: want rejection, got %v", args, err)
+		}
+	}
+	after, err := os.ReadFile(backend.DefaultBlobPath)
+	if err != nil || string(after) != string(blob) {
+		t.Fatalf("blob must be untouched, err %v", err)
+	}
+}
+
+// TestOpenRejectsCustomBlobPathAsTarget: a file backend configured with a
+// non-.shenv path is just as much the blob.
+func TestOpenRejectsCustomBlobPathAsTarget(t *testing.T) {
+	setup(t)
+	if err := os.WriteFile("config.shenv", []byte("backend = file\npath = secrets/team.age\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	feed(t, "")
+	err := Open([]string{"--force", "secrets/team.age"})
+	if err == nil || !strings.Contains(err.Error(), "shenv's own files") {
+		t.Fatalf("want rejection, got %v", err)
+	}
+}
