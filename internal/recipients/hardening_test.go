@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -206,7 +207,11 @@ func TestSaveWritesRegularFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o644 {
-		t.Fatalf("recipients file mode = %v, want regular 0644", fi.Mode())
+	if !fi.Mode().IsRegular() {
+		t.Fatalf("recipients file mode = %v, want a regular file", fi.Mode())
+	}
+	// Windows has no Unix permission bits; Go reports any writable file as 0666.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
+		t.Fatalf("recipients file mode = %v, want 0644", fi.Mode())
 	}
 }
