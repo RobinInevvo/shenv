@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.1 - 2026-10-01
+
+### Fixed
+
+- `shenv open env.shenv` (or any other shenv file as the target) is now refused before anything is decrypted. The argument is where the secrets are written, so it used to try to overwrite the encrypted file with the plaintext.
+
 ## 0.8.0 - 2026-09-19
 
 ### Added
