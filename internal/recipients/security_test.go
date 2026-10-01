@@ -104,7 +104,7 @@ func TestLookalikeNamesAreRejected(t *testing.T) {
 	if skeleton("\u0430lice") != skeleton("alice") || skeleton("\uff41lice") != skeleton("alice") {
 		t.Fatal("Cyrillic and fullwidth lookalikes must share a skeleton with the Latin name")
 	}
-	if skeleton("j\u00f6rg") == skeleton("jorg") {
+	if skeleton("j\u00f6rg") == skeleton("j\u00fcrg") {
 		t.Fatal("a genuinely different name must keep its own skeleton")
 	}
 	for _, name := range []string{"j\u00f6rg", "\u0438\u0432\u0430\u043d", "alice"} {

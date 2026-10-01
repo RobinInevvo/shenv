@@ -11,7 +11,10 @@ import (
 	"unicode/utf8"
 
 	"filippo.io/age"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 
+	"shenv/internal/backend"
 	"shenv/internal/crypto"
 )
 
@@ -27,6 +30,11 @@ type Member struct {
 }
 
 // Load reads the team list. A missing file is treated as empty.
+//
+// The file arrives over an untrusted channel (a clone, a merge), so nothing in
+// it is echoed back before it has been validated: a committed symlink pointing
+// at a local secret would otherwise have that secret printed in a parse error.
+// Errors name the line number and the offending field instead.
 func Load() ([]Member, error) {
 	data, err := os.ReadFile(Path)
 	if err != nil {
@@ -40,42 +48,44 @@ func Load() ([]Member, error) {
 	seenLook := map[string]string{} // skeleton → member name
 	seenKey := map[string]string{}  // age key → member name
 	seenSign := map[string]string{} // sign key → member name
+	lineNo := 0
 	for line := range strings.SplitSeq(string(data), "\n") {
+		lineNo++
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Fields(line)
 		if len(fields) != 3 {
-			return nil, fmt.Errorf("malformed recipients line: %q (expected `name age1... signing-key` — `shenv whoami` prints both keys)", line)
+			return nil, fmt.Errorf("%s line %d: expected 3 fields `name age1... signing-key`, found %d (`shenv whoami` prints both keys)", Path, lineNo, len(fields))
 		}
-		// The file arrives over an untrusted channel (a clone, a merge), so the
-		// name rules enforced on `add-member` must hold on load too: a control
+		// The name rules enforced on `add-member` must hold on load too: a control
 		// character in a name could smuggle terminal escapes into prompts.
 		if err := validateName(fields[0]); err != nil {
-			return nil, fmt.Errorf("%s: %w", Path, err)
+			return nil, fmt.Errorf("%s line %d: %w", Path, lineNo, err)
 		}
 		// Validate both key fields here, not just where they happen to be parsed
 		// later: push's recipient prompt echoes entries from this file, and a
 		// "key" carrying terminal escapes could redraw the very prompt meant to
 		// expose a planted recipient. Valid bech32/base64 is control-char-free.
+		// The parsers' errors quote the rejected input, so they are not wrapped.
 		if _, err := age.ParseX25519Recipient(fields[1]); err != nil {
-			return nil, fmt.Errorf("%s: member %q has an invalid public key: %w", Path, fields[0], err)
+			return nil, fmt.Errorf("%s line %d: member %q has an invalid public key (expected an age1... key)", Path, lineNo, fields[0])
 		}
 		if _, err := crypto.ParseVerifyKey(fields[2]); err != nil {
-			return nil, fmt.Errorf("%s: member %q: %w", Path, fields[0], err)
+			return nil, fmt.Errorf("%s line %d: member %q has an invalid signing key (expected the base64 key from `shenv whoami`)", Path, lineNo, fields[0])
 		}
 		// Signer lookup during pull is by name and takes the first match — a
 		// duplicate would let a shadow entry hijack an existing member's identity.
 		if seen[fields[0]] {
-			return nil, fmt.Errorf("duplicate member %q in %s — names must be unique so signatures can't be verified against the wrong key", fields[0], Path)
+			return nil, fmt.Errorf("%s line %d: duplicate member %q — names must be unique so signatures can't be verified against the wrong key", Path, lineNo, fields[0])
 		}
 		seen[fields[0]] = true
 		// Exact-string uniqueness is not enough for a name people read: "аlice"
-		// with a Cyrillic а is a different string and the same word on screen, so
-		// "signed by аlice" would pass for the real member.
+		// with a Cyrillic а, or "Alice", is a different string and the same word
+		// on screen, so "signed by аlice" would pass for the real member.
 		if other, dup := seenLook[skeleton(fields[0])]; dup {
-			return nil, fmt.Errorf("members %q and %q in %s look identical — one of them uses lookalike characters from another script; remove the impostor", other, fields[0], Path)
+			return nil, fmt.Errorf("%s line %d: members %q and %q look identical — they differ only in case, accents, invisible marks, or lookalike letters from another script; remove or rename one of them", Path, lineNo, other, fields[0])
 		}
 		seenLook[skeleton(fields[0])] = fields[0]
 		// Keys must be one-to-one with names as well: signature attribution maps
@@ -93,8 +103,14 @@ func Load() ([]Member, error) {
 	return members, nil
 }
 
-// Save writes the team list back, sorted by name for stable diffs.
+// Save writes the team list back, sorted by name for stable diffs. A symlink at
+// Path is refused rather than followed, so a committed link can't redirect the
+// write outside the repo; the atomic rename means a crash never leaves a
+// truncated member list.
 func Save(members []Member) error {
+	if err := backend.RejectSymlinks(Path); err != nil {
+		return err
+	}
 	sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
 
 	var b strings.Builder
@@ -104,7 +120,7 @@ func Save(members []Member) error {
 		fmt.Fprintf(&b, "%s %s %s\n", m.Name, m.Key, m.SignKey)
 	}
 
-	return os.WriteFile(Path, []byte(b.String()), 0o644)
+	return backend.WriteFileAtomic(Path, []byte(b.String()), 0o644)
 }
 
 // Add inserts or updates a member and persists the list. Matching an existing
@@ -185,6 +201,15 @@ func Remove(name string) error {
 // existing member — and duplicate-name detection is by exact string, so the
 // forgery would slip past it and let a shadow entry hijack that member's
 // signature attribution.
+//
+// IsGraphic alone still admits runes that render as nothing: variation
+// selectors and the combining grapheme joiner (category Mn), Hangul fillers
+// (Lo), and the blank braille pattern (So). Those are rejected explicitly, as
+// is a leading combining mark, which has no base letter to attach to and would
+// otherwise decorate whatever precedes the name on screen.
+//
+// The errors never quote the name: on Load it is untrusted input that has, by
+// definition, failed validation, and may carry terminal escapes.
 func validateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("member name must not be empty")
@@ -193,16 +218,28 @@ func validateName(name string) error {
 		return fmt.Errorf("member name must not be longer than %d characters", maxNameLen)
 	}
 	if strings.HasPrefix(name, "#") {
-		return fmt.Errorf("member name %q must not start with '#'", name)
+		return fmt.Errorf("member name must not start with '#'")
+	}
+	if first, _ := utf8.DecodeRuneInString(name); unicode.Is(unicode.M, first) {
+		return fmt.Errorf("member name must not start with a combining mark")
 	}
 	for _, r := range name {
 		// IsSpace is checked separately because a plain space (U+0020) is a
 		// graphic rune, yet still splits the line into the wrong number of fields.
-		if unicode.IsSpace(r) || !unicode.IsGraphic(r) {
-			return fmt.Errorf("member name %q must not contain whitespace, control, or invisible characters", name)
+		if unicode.IsSpace(r) || !unicode.IsGraphic(r) || invisible(r) {
+			return fmt.Errorf("member name must not contain whitespace, control, or invisible characters")
 		}
 	}
 	return nil
+}
+
+// invisible reports graphic runes that render as blank space or nothing at
+// all. Default_Ignorable_Code_Point is Cf (already non-graphic) plus these two
+// properties; U+2800 is not default-ignorable but is drawn as an empty cell.
+func invisible(r rune) bool {
+	return unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) ||
+		unicode.Is(unicode.Variation_Selector, r) ||
+		r == '⠀'
 }
 
 // maxNameLen bounds member names: they are printed in every prompt, and nothing
@@ -224,19 +261,42 @@ var lookalikes = map[rune]rune{
 }
 
 // skeleton reduces a name to what it looks like, so two names that differ only
-// in lookalike characters compare equal. Fullwidth forms fold to ASCII for the
-// same reason. Genuinely different names — including non-Latin ones — keep
-// distinct skeletons, so no script is forbidden; only impersonation is.
+// in lookalike characters compare equal. Genuinely different names — including
+// non-Latin ones — keep distinct skeletons, so no script is forbidden; only
+// impersonation is. The steps, in order:
+//
+//   - NFKC folds compatibility forms: fullwidth and mathematical alphanumerics
+//     (𝚊𝚕𝚒𝚌𝚎), ligatures, superscripts.
+//   - The lookalike table runs before case folding, because an uppercase
+//     Cyrillic or Greek letter resembles an uppercase Latin one (В/B) while the
+//     lowercase forms differ (в/b).
+//   - Case folding: "Alice" and "alice" are the same person to a reader.
+//   - NFD then dropping every combining mark: an accent is easy to miss in a
+//     prompt, so "alicé" is treated as "alice". The table runs once more so a
+//     decomposed Cyrillic letter (ё → е + ̈) lands on its Latin twin.
+//
+// Known limits: this is not the full Unicode confusables table (the standard
+// library does not carry it), so letters that merely resemble a different
+// Latin letter — Armenian ա (≈ w), Cherokee, or Latin dotless ı — are not
+// folded. Invisible runes are not handled here; validateName rejects them.
 func skeleton(name string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 0xFF01 && r <= 0xFF5E {
-			return r - 0xFEE0
+	s := norm.NFKC.String(name)
+	s = strings.Map(lookalike, s)
+	s = cases.Fold().String(s)
+	s = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.M, r) {
+			return -1
 		}
-		if l, ok := lookalikes[r]; ok {
-			return l
-		}
-		return r
-	}, name)
+		return lookalike(r)
+	}, norm.NFD.String(s))
+	return s
+}
+
+func lookalike(r rune) rune {
+	if l, ok := lookalikes[r]; ok {
+		return l
+	}
+	return r
 }
 
 // Keys parses every member into an age.Recipient for encryption.
