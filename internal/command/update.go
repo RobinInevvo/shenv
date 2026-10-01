@@ -44,6 +44,9 @@ func Update(args []string) error {
 
 	if !update.IsNewer(res.Latest, res.Current) {
 		fmt.Println(style.Good(fmt.Sprintf("You're on the latest version (%s).", res.Current)))
+		if res.SkippedPrerelease != "" {
+			fmt.Println(style.Dim(fmt.Sprintf("(%s is a pre-release; stable builds don't update to it.)", res.SkippedPrerelease)))
+		}
 		return nil
 	}
 	if checkOnly {

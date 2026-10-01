@@ -88,7 +88,7 @@ func NotifyIfAvailable(w io.Writer, current string) {
 	}
 	st := loadState()
 
-	if st.Latest != "" && IsNewer(st.Latest, current) {
+	if st.Latest != "" && IsNewer(st.Latest, current) && prereleaseAllowed(st.Latest, current) {
 		fmt.Fprintf(w, "\nA newer shenv is available: %s (you have %s). Run `shenv update` to upgrade.\n", st.Latest, current)
 	}
 

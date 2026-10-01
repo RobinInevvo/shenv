@@ -469,6 +469,10 @@ type Result struct {
 	Latest  string // latest available version
 	Updated bool   // whether the binary was replaced
 	ExePath string // the binary that was (or would be) replaced
+
+	// SkippedPrerelease is a newer pre-release that was ignored because the
+	// running build is stable; Latest is then the running version.
+	SkippedPrerelease string
 }
 
 // SelfUpdate checks for a newer release and, unless checkOnly, downloads,
@@ -488,6 +492,12 @@ func (c *Client) SelfUpdate(ctx context.Context, current string, checkOnly bool)
 	res := &Result{Current: current, Latest: latest}
 
 	if !IsNewer(latest, current) {
+		return res, nil
+	}
+	if !prereleaseAllowed(latest, current) {
+		// Not an error: a stable user is up to date, and `update --check` in a
+		// script must not start failing because a beta was published.
+		res.Latest, res.SkippedPrerelease = current, latest
 		return res, nil
 	}
 	if checkOnly {
@@ -565,6 +575,20 @@ func IsNewer(latest, current string) bool {
 		return false
 	}
 	return CompareVersions(latest, current) > 0
+}
+
+// prereleaseAllowed reports whether latest may be installed or announced.
+// Pre-releases are signed with the same key as stable releases, so the signature
+// alone can't stop someone who can flip the "latest" marker on GitHub (or forge
+// that API response) from pushing a beta onto stable users. Only users already
+// running a pre-release have opted into that channel.
+func prereleaseAllowed(latest, current string) bool {
+	return !isPrerelease(latest) || isPrerelease(current)
+}
+
+func isPrerelease(v string) bool {
+	_, pre := splitPrerelease(normalizeVersion(v))
+	return pre != ""
 }
 
 // CompareVersions compares two semver-ish versions, returning -1, 0, or 1.
