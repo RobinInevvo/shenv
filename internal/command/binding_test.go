@@ -72,6 +72,8 @@ func TestOpenRejectsUnboundBlobOnceProjectIsSet(t *testing.T) {
 	}
 
 	setProject(t, "project-a")
+	// Get past the pinned-project prompt, so the binding check itself is tested.
+	t.Setenv("SHENV_TRUST_RECIPIENTS", "1")
 	err := openErr(t)
 	if err == nil || !strings.Contains(err.Error(), "not bound to project") {
 		t.Fatalf("want a not-bound error, got %v", err)
@@ -101,7 +103,9 @@ func TestSealMigratesUnboundBlob(t *testing.T) {
 	setProject(t, "project-a")
 
 	writeEnv(t, "TOKEN=migrated\n")
-	feed(t, "") // no prompt may be needed: an unverifiable old blob would ask
+	// One answer, for the changed project id; an unverifiable old blob would
+	// ask first, use it up and leave the seal aborted.
+	feed(t, "y\n")
 	if err := Seal(nil); err != nil {
 		t.Fatalf("seal over a legacy blob: %v", err)
 	}

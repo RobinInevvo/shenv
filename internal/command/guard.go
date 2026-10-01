@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -167,11 +168,15 @@ func confirmRecipients(members []recipients.Member, selfKey string) (bool, error
 		fmt.Printf("    %s  %s\n", m.Name, style.Dim(m.Key))
 	}
 
-	prev, havePrev, err := loadPushedRecipients()
+	project, err := backend.Project()
 	if err != nil {
 		return false, err
 	}
-	if !havePrev {
+	prev, err := loadPin(project)
+	if err != nil {
+		return false, err
+	}
+	if prev == nil {
 		for _, m := range members {
 			if m.Key != selfKey {
 				fmt.Println("\n" + style.Warn("First seal from this machine — the recipient list above comes from the repo."))
@@ -182,24 +187,51 @@ func confirmRecipients(members []recipients.Member, selfKey string) (bool, error
 		return true, nil // first seal, but only encrypting for yourself
 	}
 
-	added, removed := recipientDiff(prev, recipientSet(members))
-	if len(added) == 0 && len(removed) == 0 {
+	added, removed := recipientDiff(prev.members, recipientSet(members))
+	membersChanged := len(added) > 0 || len(removed) > 0
+	projectChanged := prev.project != project
+	if !membersChanged && !projectChanged {
 		return true, nil
 	}
 
-	fmt.Println("\n" + style.Warn("The recipient list CHANGED since your last seal:"))
-	// Sanitized for the same reason as confirmExec: this prompt is what exposes
-	// a planted recipient, so it must render exactly what the file contains.
-	// Additions render in warning yellow, not success green: this line's job is
-	// to expose a possibly-planted exfiltration key, so it must read as an alarm.
+	if membersChanged {
+		fmt.Println("\n" + style.Warn("The recipient list CHANGED since your last seal:"))
+		printMemberDiff(os.Stdout, added, removed)
+		fmt.Println(style.Warn("Anyone added here will be able to decrypt these secrets."))
+	}
+	if projectChanged {
+		fmt.Println("\n" + style.Warn("The project id in config.shenv CHANGED since your last seal:"))
+		printProjectChange(os.Stdout, prev.project, project)
+		fmt.Println(style.Warn("The blob will be bound to the new id and verify only where config.shenv names it."))
+	}
+	return askYesNo("Continue?"), nil
+}
+
+// printMemberDiff renders the member entries that changed against the pin.
+// Sanitized for the same reason as confirmExec: this prompt is what exposes a
+// planted recipient, so it must render exactly what the file contains.
+// Additions render in warning yellow, not success green: their job is to expose
+// a possibly-planted key, so they must read as an alarm.
+func printMemberDiff(w io.Writer, added, removed []string) {
 	for _, a := range added {
-		fmt.Println(style.Warn("    + " + sanitizeTerm(strings.ReplaceAll(a, "\t", "  "))))
+		fmt.Fprintln(w, style.Warn("    + "+sanitizeTerm(strings.ReplaceAll(a, "\t", "  "))))
 	}
 	for _, r := range removed {
-		fmt.Println(style.Danger("    - " + sanitizeTerm(strings.ReplaceAll(r, "\t", "  "))))
+		fmt.Fprintln(w, style.Danger("    - "+sanitizeTerm(strings.ReplaceAll(r, "\t", "  "))))
 	}
-	fmt.Println(style.Warn("Anyone added here will be able to decrypt these secrets."))
-	return askYesNo("Continue?"), nil
+}
+
+// printProjectChange renders a changed project id. An empty id is an absent
+// `project` line, which counts as a change too: it lets open accept unbound
+// blobs again.
+func printProjectChange(w io.Writer, from, to string) {
+	label := func(id string) string {
+		if id == "" {
+			return "(none)"
+		}
+		return sanitizeTerm(id)
+	}
+	fmt.Fprintln(w, style.Danger("    project: "+label(from)+" → "+label(to)))
 }
 
 // recipientDiff lists the entries that appeared and disappeared between two
@@ -225,7 +257,8 @@ func recipientDiff(prev, cur map[string]bool) (added, removed []string) {
 // recipients.shenv, which arrives over the same untrusted channel as the blob:
 // whoever can change both can add their own key and sign whatever they like. So
 // the set this machine last accepted is pinned, and a changed file has to be
-// confirmed before its keys are trusted. The pin is the one seal records — a
+// confirmed before its keys are trusted. The project id signatures are bound to
+// comes from the repo too and is pinned alongside. The pin is the one seal records — a
 // change confirmed on either side is not asked about again on the other.
 //
 // Everything goes to stderr: `shenv run` hands stdout to the child's consumer.
@@ -234,35 +267,52 @@ func confirmPinnedRecipients() error {
 	if err != nil || len(members) == 0 {
 		return err // an empty list fails verification on its own
 	}
-	prev, havePrev, err := loadPushedRecipients()
+	project, err := backend.Project()
 	if err != nil {
 		return err
 	}
-	if !havePrev {
+	prev, err := loadPin(project)
+	if err != nil {
+		return err
+	}
+	if prev == nil {
 		// Nothing to compare a first use against; trust on first use, and say so.
 		fmt.Fprintf(os.Stderr, "Trusting the %d member(s) in %s from now on; later changes will need confirmation.\n", len(members), recipients.Path)
 		return rememberRecipients(members)
 	}
-	added, removed := recipientDiff(prev, recipientSet(members))
-	if len(added) == 0 && len(removed) == 0 {
+	added, removed := recipientDiff(prev.members, recipientSet(members))
+	membersChanged := len(added) > 0 || len(removed) > 0
+	projectChanged := prev.project != project
+	if !membersChanged && !projectChanged {
 		return nil
 	}
 
-	fmt.Fprintln(os.Stderr, style.Warn(recipients.Path+" CHANGED since this machine last trusted it:"))
-	for _, a := range added {
-		fmt.Fprintln(os.Stderr, style.Warn("    + "+sanitizeTerm(strings.ReplaceAll(a, "\t", "  "))))
+	var changed []string
+	if membersChanged {
+		changed = append(changed, recipients.Path)
+		fmt.Fprintln(os.Stderr, style.Warn(recipients.Path+" CHANGED since this machine last trusted it:"))
+		printMemberDiff(os.Stderr, added, removed)
+		fmt.Fprintln(os.Stderr, style.Warn("A blob signed by anyone added here will be accepted as genuine."))
 	}
-	for _, r := range removed {
-		fmt.Fprintln(os.Stderr, style.Danger("    - "+sanitizeTerm(strings.ReplaceAll(r, "\t", "  "))))
+	if projectChanged {
+		changed = append(changed, "the project id in config.shenv")
+		fmt.Fprintln(os.Stderr, style.Warn("The project id in config.shenv CHANGED since this machine last trusted it:"))
+		printProjectChange(os.Stderr, prev.project, project)
+		fmt.Fprintln(os.Stderr, style.Warn("A blob a shared member sealed for that project will be accepted as genuine."))
 	}
-	fmt.Fprintln(os.Stderr, style.Warn("A blob signed by anyone added here will be accepted as genuine."))
 	if os.Getenv("SHENV_TRUST_RECIPIENTS") == "1" {
 		fmt.Fprintln(os.Stderr, "shenv: SHENV_TRUST_RECIPIENTS=1 — accepting the change without asking")
 		return rememberRecipients(members)
 	}
-	fmt.Fprint(os.Stderr, "\n"+style.Prompt("Trust the new member list? [y/N]")+" ")
+	question := "Trust the new member list?"
+	if !membersChanged {
+		question = "Trust the new project id?"
+	} else if projectChanged {
+		question = "Trust these changes?"
+	}
+	fmt.Fprint(os.Stderr, "\n"+style.Prompt(question+" [y/N]")+" ")
 	if !confirm() {
-		return fmt.Errorf("%s changed and was not confirmed — refusing to verify env.shenv against it", recipients.Path)
+		return fmt.Errorf("%s changed and was not confirmed — refusing to verify env.shenv against it", strings.Join(changed, " and "))
 	}
 	return rememberRecipients(members)
 }
@@ -282,9 +332,30 @@ func sanitizeTerm(s string) string {
 	}, s)
 }
 
-// rememberRecipients records the recipient set after a successful seal so the next
-// seal can detect changes.
+// projectPinPrefix marks the pin's project-id line. Member names can't start
+// with '#', so it can't be mistaken for a member entry.
+const projectPinPrefix = "#project\t"
+
+// pin is what this machine last accepted for a checkout: the member set and the
+// project id signatures are bound to. Both come from the repo and both decide
+// what open accepts — a swapped project id lets a blob a shared member sealed
+// for another repo verify here — so a change to either has to be confirmed.
+type pin struct {
+	members map[string]bool
+	project string
+}
+
+// rememberRecipients records the recipient set and the current project id after
+// a successful seal or a confirmed change, so the next run can detect changes.
 func rememberRecipients(members []recipients.Member) error {
+	project, err := backend.Project()
+	if err != nil {
+		return err
+	}
+	return writePin(recipientSet(members), project)
+}
+
+func writePin(members map[string]bool, project string) error {
 	path, err := pushedRecipientsPath()
 	if err != nil {
 		return err
@@ -292,21 +363,49 @@ func rememberRecipients(members []recipients.Member) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	set := recipientSet(members)
-	lines := make([]string, 0, len(set))
-	for k := range set {
+	lines := make([]string, 0, len(members)+1)
+	for k := range members {
 		lines = append(lines, k)
 	}
 	sort.Strings(lines)
+	lines = append(lines, projectPinPrefix+project)
 	// Written atomically: a half-written set would look like a recipient change on
 	// the next seal — or, worse, hide one — and this file is the only record of
 	// what this machine last sealed for.
 	return backend.WriteFileAtomic(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
-// loadPushedRecipients reads the recipient set from the last seal. The second
+// loadPin reads this checkout's pin, or nil when there is none yet. A pin
+// written before the project id was pinned adopts the current one silently and
+// is rewritten: prompting would break every non-interactive run on upgrade, and
+// adopting is the same trust on first use a fresh machine gets.
+func loadPin(project string) (*pin, error) {
+	p, hasProject, err := readPin()
+	if err != nil || p == nil {
+		return nil, err
+	}
+	if !hasProject {
+		p.project = project
+		if err := writePin(p.members, project); err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
+}
+
+// loadPushedRecipients reads the member set from the last seal. The second
 // result is false when no previous seal has been recorded on this machine.
 func loadPushedRecipients() (map[string]bool, bool, error) {
+	p, _, err := readPin()
+	if err != nil || p == nil {
+		return nil, false, err
+	}
+	return p.members, true, nil
+}
+
+// readPin parses the pin file as written, reporting whether it carries a
+// project line; nil means no pin exists yet.
+func readPin() (*pin, bool, error) {
 	path, err := pushedRecipientsPath()
 	if err != nil {
 		return nil, false, err
@@ -318,16 +417,20 @@ func loadPushedRecipients() (map[string]bool, bool, error) {
 		}
 		return nil, false, err
 	}
-	set := map[string]bool{}
+	p := &pin{members: map[string]bool{}}
+	hasProject := false
 	for line := range strings.SplitSeq(string(data), "\n") {
 		// Trim only the line ending: entries are tab-separated and a member
 		// without a sign key ends in a tab that TrimSpace would eat.
 		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) != "" {
-			set[line] = true
+		switch {
+		case strings.HasPrefix(line, projectPinPrefix):
+			p.project, hasProject = strings.TrimPrefix(line, projectPinPrefix), true
+		case strings.TrimSpace(line) != "":
+			p.members[line] = true
 		}
 	}
-	return set, true, nil
+	return p, hasProject, nil
 }
 
 // recipientSet builds a comparable set of "name\tkey\tsignkey" entries, so a
