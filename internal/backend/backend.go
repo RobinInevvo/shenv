@@ -242,11 +242,17 @@ func Load() (Backend, error) {
 // would let it silently delete the rule keeping the plaintext .env out of
 // commits.
 func validateBlobPath(path string) error {
+	// Backslashes count as separators on every OS so a Unix check reaches the
+	// same verdict a Windows teammate's would for `..\x` or `sub\.env`.
+	native := filepath.FromSlash(strings.ReplaceAll(path, `\`, "/"))
 	// IsLocal rejects absolute, rooted, `..`-escaping, and Windows-reserved paths.
-	if !filepath.IsLocal(path) {
+	if !filepath.IsLocal(path) || !filepath.IsLocal(native) {
 		return fmt.Errorf("blob path %q in %s must stay inside the repo", path, configPath)
 	}
-	clean := filepath.Clean(filepath.FromSlash(path))
+	clean := filepath.Clean(native)
+	if err := checkPortableComponents(path); err != nil {
+		return fmt.Errorf("blob path %q in %s: %w", path, configPath, err)
+	}
 	first := clean
 	if i := strings.IndexByte(clean, filepath.Separator); i >= 0 {
 		first = clean[:i]
@@ -265,6 +271,43 @@ func validateBlobPath(path string) error {
 		}
 	}
 	return nil
+}
+
+// checkPortableComponents rejects path components that Windows would resolve to
+// a different name than the one validateBlobPath compares against. Win32 path
+// normalization silently strips trailing dots and spaces (`.gitignore.` opens
+// .gitignore, `.git./config` opens .git/config), 8.3 short names (`GITIGN~1`)
+// alias long ones, and a colon addresses an NTFS data stream
+// (`.gitignore::$DATA` is the file's contents). config.shenv is shared across
+// operating systems, so a path that is only dangerous for a Windows teammate is
+// refused everywhere, and both separators are honoured for the same reason.
+func checkPortableComponents(path string) error {
+	for _, c := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if c == "." || c == ".." {
+			continue // IsLocal already decided these
+		}
+		if strings.HasSuffix(c, ".") || strings.HasSuffix(c, " ") {
+			return fmt.Errorf("component %q ends in a dot or space, which Windows strips", c)
+		}
+		if strings.ContainsRune(c, ':') {
+			return fmt.Errorf("component %q contains ':', which Windows reads as a data stream", c)
+		}
+		if looksLikeShortName(c) {
+			return fmt.Errorf("component %q looks like a Windows 8.3 short name", c)
+		}
+	}
+	return nil
+}
+
+// looksLikeShortName reports whether c contains '~' followed by a digit, the
+// shape of a generated 8.3 alias such as GITIGN~1 or PROGRA~2.TXT.
+func looksLikeShortName(c string) bool {
+	for i := 0; i+1 < len(c); i++ {
+		if c[i] == '~' && c[i+1] >= '0' && c[i+1] <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // readCapped reads r into memory, refusing to buffer more than MaxBlobSize bytes.
