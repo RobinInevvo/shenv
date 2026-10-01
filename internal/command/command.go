@@ -482,14 +482,18 @@ func ensureGitignore() error {
 	return err
 }
 
-// isGitTracked reports whether git tracks path. Best-effort: without git on
-// PATH or outside a work tree it reports false. Only good enough for reporting
-// (see status); guarding a plaintext write goes through ensureIgnored, which
-// fails closed instead.
+// isGitTracked reports whether git tracks path, under any spelling
+// core.ignorecase makes the same file. Best-effort: without git on PATH,
+// outside a work tree, or on any git failure it reports false. Only good enough
+// for reporting (see status); guarding a plaintext write goes through
+// ensureIgnored, which fails closed instead.
 func isGitTracked(path string) bool {
-	cmd := exec.Command("git", "ls-files", "--error-unmatch", "--", path)
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	return cmd.Run() == nil
+	target, err := resolveGitTarget(path)
+	if err != nil || target == nil {
+		return false
+	}
+	name, err := target.trackedAs()
+	return err == nil && name != ""
 }
 
 // confirm reads a y/n answer from stdin.

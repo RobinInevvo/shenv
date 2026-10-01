@@ -138,17 +138,75 @@ func resolveGitTarget(path string) (*gitTarget, error) {
 // effect on a tracked file, so `git commit -a` would commit the plaintext no
 // matter what rule we add.
 func (t gitTarget) refuseTracked() error {
+	name, err := t.trackedAs()
+	if err != nil {
+		return err
+	}
+	switch name {
+	case "":
+		return nil
+	case t.rel:
+		return fmt.Errorf("%s is tracked by git, so .gitignore cannot keep it out of commits — pick a different output path (or `git rm --cached -- %s` first)", t.rel, t.rel)
+	}
+	shown := sanitizeTerm(name)
+	return fmt.Errorf("%s is tracked by git as %s — with core.ignorecase both names are the same file, so .gitignore cannot keep it out of commits; pick a different output path (or `git rm --cached -- %s` first)", t.rel, shown, shown)
+}
+
+// trackedAs reports the index entry the destination is tracked as, or "" when
+// git does not track it. Pathspecs match case-sensitively even with
+// core.ignorecase set, yet on such a worktree `.env` and a tracked `.ENV` are
+// one file on disk — writing to one overwrites the other. So when git itself
+// treats the worktree as case-insensitive, an index entry differing only in
+// case counts as the destination.
+func (t gitTarget) trackedAs() (string, error) {
 	_, stderr, code, err := runGitLiteral(t.root, "ls-files", "--error-unmatch", "--", t.rel)
 	if err != nil {
-		return fmt.Errorf("asking git whether %s is tracked: %w", t.rel, err)
+		return "", fmt.Errorf("asking git whether %s is tracked: %w", t.rel, err)
 	}
 	switch code {
 	case 0:
-		return fmt.Errorf("%s is tracked by git, so .gitignore cannot keep it out of commits — pick a different output path (or `git rm --cached -- %s` first)", t.rel, t.rel)
+		return t.rel, nil
 	case 1:
-		return nil
+	default:
+		return "", fmt.Errorf("git could not tell whether %s is tracked, so it cannot be protected from being committed: %s", t.rel, firstLine(stderr))
 	}
-	return fmt.Errorf("git could not tell whether %s is tracked, so it cannot be protected from being committed: %s", t.rel, firstLine(stderr))
+
+	icase, err := t.ignoresCase()
+	if err != nil || !icase {
+		return "", err
+	}
+	// The whole index, not a pathspec scoped to the parent directory: that
+	// pathspec would itself match case-sensitively and miss `ENV/.env` for
+	// `env/.env`.
+	out, stderr, code, err := runGit(t.root, "ls-files", "-z")
+	if err != nil {
+		return "", fmt.Errorf("asking git whether %s is tracked: %w", t.rel, err)
+	}
+	if code != 0 {
+		return "", fmt.Errorf("git could not tell whether %s is tracked, so it cannot be protected from being committed: %s", t.rel, firstLine(stderr))
+	}
+	for entry := range strings.SplitSeq(out, "\x00") {
+		if entry != "" && strings.EqualFold(entry, t.rel) {
+			return entry, nil
+		}
+	}
+	return "", nil
+}
+
+// ignoresCase reports whether git treats the worktree as case-insensitive. An
+// unset core.ignorecase means false, as it does to git.
+func (t gitTarget) ignoresCase() (bool, error) {
+	out, stderr, code, err := runGit(t.root, "config", "--bool", "core.ignorecase")
+	if err != nil {
+		return false, fmt.Errorf("asking git whether %s is case-insensitive: %w", t.root, err)
+	}
+	switch code {
+	case 0:
+		return strings.TrimSpace(out) == "true", nil
+	case 1:
+		return false, nil
+	}
+	return false, fmt.Errorf("git could not tell whether %s is case-insensitive, so tracked files cannot be ruled out: %s", t.root, firstLine(stderr))
 }
 
 // ignored asks git for its effective ignore decision on a worktree-relative
