@@ -63,7 +63,13 @@ closed** — the update is refused, never installed unverified.
   API responses can keep serving an older but genuinely-signed release as
   "latest". The updater already refuses to *downgrade* (it only installs a
   strictly newer version), so this can stall users on the current version but
-  cannot push a known-vulnerable older one onto an up-to-date machine.
+  cannot push a known-vulnerable older one onto an up-to-date machine. A machine
+  that is *behind* can still be steered to any signed release between its
+  version and the newest one, not necessarily the newest.
+- **Pre-releases.** They are signed with the same key, so the signature can't
+  tell a beta from a stable release. A stable build therefore never installs or
+  announces a pre-release reported as "latest"; only a build that is itself a
+  pre-release follows that channel.
 
 ## Components
 

@@ -36,6 +36,11 @@ Existing repos keep working without one. To bind one: `shenv open`, add the
 rejected, and teammates on a shenv older than this feature must update — their
 version cannot verify a bound blob and refuses it.
 
+The id is committed, so whoever can rewrite the repo can also rewrite it. That's
+why it is pinned together with the member list (below): changing or removing the
+`project` line asks for confirmation on every machine that already trusted the
+old one.
+
 ## Member changes are confirmed on open, too
 
 `recipients.shenv` holds the signing keys blobs are verified against, and it
@@ -47,8 +52,13 @@ the same pin, as seal's. A first use on a machine has nothing to compare against
 and trusts the list as cloned. Non-interactive runs that must accept a change set
 `SHENV_TRUST_RECIPIENTS=1`; the change is still printed.
 
-Two members whose names only differ by lookalike characters (a Cyrillic `а` in
-`аlice`) are rejected, so "signed by alice" means the alice you know.
+Two members whose names only look alike are rejected, so "signed by alice"
+means the alice you know: names are compared after Unicode compatibility
+folding, case folding, dropping accents, and mapping common Cyrillic/Greek
+lookalikes to Latin (`аlice`, `Alice`, `álice` and `𝚊𝚕𝚒𝚌𝚎` all collide with
+`alice`), and invisible characters (zero-width, variation selectors, fillers)
+are refused outright. This is not a full Unicode confusables table — rarer
+lookalikes from other scripts (an Armenian `ա`) still pass.
 
 ## What signing does not cover
 
