@@ -81,6 +81,12 @@ Or skip the file entirely and inject secrets straight into a process:
 shenv run -- npm start    # secrets live only in npm's environment, no .env written
 ```
 
+With Docker Compose, `shenv run -- docker compose up -d` works if the compose file
+passes the variables through (`environment: [API_KEY]`); `env_file: .env` won't find
+a file. Values end up in `docker inspect`; to keep them out, use a compose secret
+(`secrets: { api_key: { environment: API_KEY } }`), which the container reads from
+`/run/secrets/api_key`.
+
 Changing a secret doesn't need a plaintext `.env` either:
 
 ```sh
